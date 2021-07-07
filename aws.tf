@@ -7,6 +7,7 @@ resource "aws_customer_gateway" "customer_gateway1" {
 }
 
 resource "aws_customer_gateway" "customer_gateway2" {
+  count      = var.ha_vpn ? 1 : 0
   bgp_asn    = var.gcp_asn
   ip_address = google_compute_ha_vpn_gateway.ha_vpn_gateway.vpn_interfaces[1].ip_address
   type       = "ipsec.1"
@@ -15,7 +16,7 @@ resource "aws_customer_gateway" "customer_gateway2" {
 }
 
 resource "aws_vpn_gateway" "default" {
-  vpc_id = "${var.aws_vpc}"
+  vpc_id = var.aws_vpc
 
   tags   = merge({ Name = var.name }, local.interpolated_tags)
 }
@@ -29,45 +30,20 @@ resource "aws_vpn_connection" "vpn1" {
 }
 
 resource "aws_vpn_connection" "vpn2" {
+  count      = var.ha_vpn ? 1 : 0
   vpn_gateway_id      = aws_vpn_gateway.default.id
-  customer_gateway_id = aws_customer_gateway.customer_gateway2.id
-  type                = aws_customer_gateway.customer_gateway2.type
+  customer_gateway_id = aws_customer_gateway.customer_gateway2[0].id
+  type                = aws_customer_gateway.customer_gateway2[0].type
 
   tags                = merge({ Name = var.name }, local.interpolated_tags)
 }
 
-resource "aws_route" "gcp" {
-  count                  = length(var.aws_route_tables_ids)
-  route_table_id         = var.aws_route_tables_ids[count.index]
-  gateway_id             = aws_vpn_gateway.default.id
-  destination_cidr_block = var.gcp_cidr
-
-  # NB: tags not supported here
-  # tags = merge({Name = var.name}, local.interpolated_tags)
+data "aws_route_tables" "rts" {
+  vpc_id = var.aws_vpc
 }
 
-# Allow inbound access to VPC resources from GCP CIDR
-resource "aws_security_group_rule" "google_ingress_vpn" {
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = [var.gcp_cidr]
-  security_group_id = var.aws_sg
-
-  # NB: tags not supported here
-  # tags = merge({Name = var.name}, local.interpolated_tags)
-}
-
-# Allow outbound access from VPC resources to GCP CIDR
-resource "aws_security_group_rule" "google_egress_vpn" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = [var.gcp_cidr]
-  security_group_id = var.aws_sg
-
-  # NB: tags not supported here
-  # tags = merge({Name = var.name}, local.interpolated_tags)
+resource "aws_vpn_gateway_route_propagation" "gcp" {
+  for_each             = var.aws_route_tables_ids != null ? toset(var.aws_route_tables_ids) : data.aws_route_tables.rts.ids
+  vpn_gateway_id       = aws_vpn_gateway.default.id
+  route_table_id       = each.value
 }
